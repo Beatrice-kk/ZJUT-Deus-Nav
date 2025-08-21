@@ -1,0 +1,4 @@
+<launch>
+    <node pkg="strategy" type="lidar_pose_node" name="lidar_pose_node" output="screen">
+    </node>
+</launch>
