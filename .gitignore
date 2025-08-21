@@ -1,0 +1,53 @@
+# ROS Catkin workspace .gitignore
+
+# Ignore build and development files
+build/
+devel/
+install/
+
+# Ignore Python cache
+__pycache__/
+*.pyc
+
+# Ignore logs
+*.log
+log/
+logs/
+*.swp
+
+# Ignore ROS generated files
+*.bak
+*.old
+*.~*
+*.orig
+
+# Ignore generated msgs and srv (if any)
+msg_gen/
+srv_gen/
+
+# Ignore VSCode and JetBrains IDE settings
+.vscode/
+.idea/
+
+# Ignore Mac OS files
+.DS_Store
+
+# Ignore other system files
+Thumbs.db
+
+# Ignore CMake files
+CMakeFiles/
+cmake_install.cmake
+CMakeCache.txt
+
+# Ignore launch file backups
+*.launch~
+
+# Ignore custom bags or data
+*.bag
+*.db
+
+# Ignore temp files
+tmp/
+temp/
+*.tmp
