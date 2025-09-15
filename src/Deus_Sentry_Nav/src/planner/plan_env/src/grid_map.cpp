@@ -121,6 +121,10 @@ void GridMap::initMap(ros::NodeHandle &nh)
         SyncPolicyImageOdom(100), *depth_sub_, *odom_sub_));
     sync_image_odom_->registerCallback(boost::bind(&GridMap::depthOdomCallback, this, _1, _2));
   }
+    else
+  {
+      ROS_ERROR("Map usage error!");
+  }
 
   // use odometry and point cloud
   indep_cloud_sub_ =
