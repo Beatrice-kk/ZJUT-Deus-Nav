@@ -54,6 +54,9 @@ from PyQt5.QtCore import QTimer
 import py_trees
 import py_trees_ros
 
+
+from Deus_Sentry_Nav.msg import ChaseCommand
+
 ##########################################################################################
 # UI 调试类 (与之前版本相同, 用于数据显示)
 ##########################################################################################
@@ -252,6 +255,77 @@ class PatrolCenter(py_trees.behaviour.Behaviour):
         self.controller.control_active = False
 
 
+######### 追击逻辑的行为树节点 #########
+class IsChaseModeActive(py_trees.behaviour.Behaviour):
+    """
+    [条件节点] 检查是否收到了追击指令。
+    """
+    def __init__(self, name, controller):
+        super(IsChaseModeActive, self).__init__(name)
+        self.controller = controller
+
+    def update(self):
+        if self.controller.chase_active:
+            self.feedback_message = "追击指令已激活！"
+            return py_trees.common.Status.SUCCESS
+        else:
+            self.feedback_message = "无追击指令"
+            return py_trees.common.Status.FAILURE
+
+class ChaseEnemy(py_trees.behaviour.Behaviour):
+    """
+    [动作节点] 执行追击敌人的行为。
+    """
+    def __init__(self, name, controller):
+        super(ChaseEnemy, self).__init__(name)
+        self.controller = controller
+        self.chase_target_point = Point()
+
+    def initialise(self):
+        """当追击行为开始时调用。"""
+        rospy.loginfo("行为 '追击敌人' 启动")
+        self.controller.navigator.CmdID = 3  # 可以为追击设置一个独特的命令ID
+        self.controller.nav_speed = self.controller.default_nav_speed # 使用默认速度追击
+
+        # --- 核心追击点计算逻辑 ---
+        # 策略：选择朝向敌人方向，距离自身一定比例（如50%）的一个点作为目标。
+        # 这样做可以避免目标点过远或直接撞向敌人，为后续微调留出空间。
+        chase_distance_ratio = 0.5  # 追击距离比例，可以设为参数
+        
+        # 获取敌人相对位置
+        rel_x = self.controller.relative_enemy_pos.x
+        rel_y = self.controller.relative_enemy_pos.y
+
+        # 计算追击目标点（在世界坐标系下）
+        # 注意：这里的实现假设相对坐标是基于机器人自身坐标系的。
+        # 如果相对坐标是基于世界坐标系的，计算方式会更简单。
+        # 假设基于机器人坐标系，需要先转换到世界坐标系。
+        # 为了简化，我们暂时假设一个简单的模型：直接在当前位置上加上部分相对位移。
+        # 一个更鲁棒的实现需要坐标系转换。
+        target_x = self.controller.current_placex + rel_x * chase_distance_ratio
+        target_y = self.controller.current_placey + rel_y * chase_distance_ratio
+
+        self.chase_target_point.x = target_x
+        self.chase_target_point.y = target_y
+        
+        rospy.loginfo(f"计算追击点: ({target_x:.2f}, {target_y:.2f})")
+        self.controller.go_to(self.chase_target_point)
+
+    def update(self):
+        """在追击过程中，保持RUNNING状态，直到被更高优先级的行为打断。"""
+        # 只要追击标志位仍然为True，并且上层导航还在工作，就认为任务在进行中
+        if self.controller.chase_active and self.controller.control_active:
+            self.feedback_message = "正在追击敌人..."
+            return py_trees.common.Status.RUNNING
+        else:
+            # 如果 chase_active 变为 False，说明外部指令取消了追击，任务完成。
+            self.feedback_message = "追击指令已取消"
+            return py_trees.common.Status.SUCCESS
+
+    def terminate(self, new_status):
+        """当追击行为被中断或完成时调用。"""
+        rospy.loginfo(f"行为 '追击敌人' 终止，状态: {new_status}")
+
 ##########################################################################################
 # 主控制器类
 ##########################################################################################
@@ -266,6 +340,13 @@ class VelocityController:
         # 加载所有参数
         self.load_parameters()
         
+
+        self.chase_active = False
+        self.relative_enemy_pos = Point() # 使用Point对象来存储相对位置
+
+
+
+
         # 初始化串口通信和各种状态变量
         self.navigator = NvigateData_t(self.uart_port, self.uart_bps, self.uart_timeout)
         self.last_update_time = time.time()
@@ -291,7 +372,10 @@ class VelocityController:
         # 订阅话题
         rospy.Subscriber("/position_cmd", PositionCommand, self.velocity_callback)
         rospy.Subscriber("/Odometry", Odometry, self.odom_callback)
-        
+
+        # 追击话题
+        rospy.Subscriber("/chase_cmd", ChaseCommand, self.chase_callback) 
+
         # 定时器，用于底层控制循环
         rospy.Timer(rospy.Duration(1.0 / self.control_loop_rate), self.control_loop)
         
@@ -411,6 +495,81 @@ class VelocityController:
         self.control_active = True
         # 更新UI
         self.debugger.update_data(self.desire_vx, self.desire_vy, self.desire_ax, self.desire_ay, self.desire_placex, self.desire_placey)
+
+
+    def chase_callback(self, msg):
+        """
+        回调函数，用于接收和处理来自 /chase_cmd 话题的追击指令。
+        """
+        self.chase_active = msg.chase_active
+        if self.chase_active:
+            self.relative_enemy_pos.x = msg.relative_position.x
+            self.relative_enemy_pos.y = msg.relative_position.y
+            # 可以在此处添加日志，方便调试
+            # rospy.loginfo_throttle(1.0, f"收到追击指令: active={self.chase_active}, rel_pos=({self.relative_enemy_pos.x:.2f}, {self.relative_enemy_pos.y:.2f})")
+
+    def create_behavior_tree(self):
+        """
+        【修改】核心函数: 创建并组织行为树。
+        在这里加入新的“追击”逻辑。
+        """
+        
+        # --- 1. 创建所有行为和条件的实例 (新增追击相关的节点) ---
+        go_home = GoToPoint("回家", self, self.home_point, self.home_nav_speed)
+        go_center = GoToPoint("前往中心点", self, self.center_point[0], self.default_nav_speed)
+        patrol_center = PatrolCenter("巡逻中心", self)
+        is_game_running = IsGameRunning("比赛是否进行中", self)
+        is_health_low = IsHealthLow("血量是否过低", self)
+        is_health_full = IsHealthFull("血量是否已满", self)
+        
+        # 新增的追击节点
+        is_chase_mode_active = IsChaseModeActive("是否处于追击模式", self)
+        chase_enemy = ChaseEnemy("追击敌人", self)
+
+        # --- 2. 构建树的层级结构 (调整优先级) ---
+        
+        # 逃跑逻辑 (优先级最高: 1)
+        escape_logic = py_trees.composites.Sequence("逃跑逻辑", memory=True)
+        escape_logic.add_children([is_health_low, go_home])
+
+        # 【新增】追击逻辑 (优先级: 2)
+        # 序列(Sequence)节点: 必须“追击模式激活” AND “执行追击行为”
+        chase_logic = py_trees.composites.Sequence("追击逻辑", memory=True)
+        chase_logic.add_children([is_chase_mode_active, chase_enemy])
+
+        # 进攻逻辑 (优先级调整为: 3)
+        attack_logic = py_trees.composites.Sequence("进攻逻辑", memory=True)
+        attack_logic.add_children([is_health_full, go_center])
+
+        # 巡逻逻辑 (优先级最低: 4)
+        idle_patrol_logic = py_trees.composites.Sequence("空闲巡逻逻辑", memory=True)
+        idle_patrol_logic.add_children([py_trees.decorators.Inverter(is_health_low), 
+                                        py_trees.decorators.Inverter(is_health_full),
+                                        py_trees.decorators.Inverter(is_chase_mode_active), # 【修改】确保巡逻前没有追击任务
+                                        patrol_center])
+
+        # 主策略选择器 (Selector)，定义了所有行为的优先级
+        # 【修改】将 chase_logic 插入到正确的位置
+        main_strategy = py_trees.composites.Selector("主策略", memory=False)
+        main_strategy.add_children([
+            escape_logic,         # 1. 优先逃跑
+            chase_logic,          # 2. 其次追击
+            attack_logic,         # 3. 然后进攻
+            idle_patrol_logic     # 4. 最后巡逻
+        ])
+        
+        # ... (根节点的构建保持不变) ...
+        game_active_branch = py_trees.composites.Sequence("游戏激活分支", memory=True)
+        game_active_branch.add_children([is_game_running, main_strategy])
+        root = py_trees.composites.Selector("机器人总根节点", memory=False)
+        root.add_children([game_active_branch])
+
+        rospy.loginfo("行为树已更新，包含追击逻辑。")
+        py_trees.display.print_ascii_tree(root, show_status=True) # 打印带状态的树结构
+        
+        return py_trees_ros.trees.BehaviourTree(root)
+
+
 
     def control_loop(self, event):
         """底层控制循环，以较高频率运行，直接计算并发送给串口。"""
