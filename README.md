@@ -100,3 +100,18 @@ Feel free to submit issues or pull requests to improve the robot's functionality
 ## 📄 License
 
 This project is currently not under a specific license. Please contact the author before use.
+
+
+
+## ⭐ Star History
+
+<a href="https://star-history.com/#Beatrice-kk/ZJUT-Deus-Nav&Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)"
+            srcset="https://api.star-history.com/svg?repos=Beatrice-kk/ZJUT-Deus-Nav&type=Date&theme=dark" />
+    <source media="(prefers-color-scheme: light)"
+            srcset="https://api.star-history.com/svg?repos=Beatrice-kk/ZJUT-Deus-Nav&type=Date" />
+    <img alt="Star History Chart"
+         src="https://api.star-history.com/svg?repos=Beatrice-kk/ZJUT-Deus-Nav&type=Date" />
+  </picture>
+</a>
